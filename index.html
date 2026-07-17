@@ -89,6 +89,17 @@
   .flavor-chip{ padding:5px 10px; border-radius:8px; font-size:11.5px; font-weight:700; background:var(--chip-bg); color:var(--teal); cursor:pointer;}
   .flavor-chip.selected{ background:var(--teal); color:#fff;}
 
+  .flavor-table{display:flex; flex-direction:column; margin-top:2px;}
+  .flavor-row{display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 0; border-bottom:1px dashed var(--line);}
+  .flavor-row:last-child{border-bottom:none;}
+  .flavor-row-label{font-size:12.5px; font-weight:700; color:var(--ink); flex:1;}
+  .flavor-row-label.mix{color:var(--saffron-dark);}
+  .stepper.mini button{width:24px; height:24px; font-size:14px;}
+  .stepper.mini span{width:20px; font-size:12.5px;}
+  .note-field{margin-top:6px;}
+  .note-field textarea{ width:100%; border:1.5px solid var(--line); border-radius:8px; padding:8px 10px; font-family:'Tajawal'; font-size:12px; resize:none; outline:none; min-height:42px; background:#fff; color:var(--ink);}
+  .note-field textarea:focus{border-color:var(--saffron);}
+
   .qty-row{ margin-top:auto; display:flex; align-items:center; justify-content:space-between; gap:8px; padding-top:6px;}
   .stepper{ display:flex; align-items:center; background:var(--chip-bg); border-radius:8px; overflow:hidden;}
   .stepper button{ width:28px; height:28px; border:none; background:transparent; font-size:16px; font-weight:800; color:var(--teal); cursor:pointer;}
@@ -146,7 +157,7 @@
   .img-upload img{max-width:100%; max-height:110px; border-radius:8px; margin-top:8px;}
   .img-upload input[type=file]{ position:absolute; inset:0; opacity:0; cursor:pointer;}
 
-  .save-bar{ position:sticky; bottom:0; background:var(--bg); padding:14px 0 4px;}
+  .save-bar{ position:fixed; left:0; right:0; bottom:0; background:var(--paper); padding:12px 0; border-top:1px solid var(--line); box-shadow:0 -6px 18px rgba(0,0,0,0.08); z-index:90;}
 
   a{color:inherit;}
 </style>
@@ -208,11 +219,18 @@
 <div id="adminView" style="display:none;">
   <div class="admin-bar">
     <b><span class="tag-badge">Admin</span>لوحة تحكم الكتالوج</b>
+    <span id="adminStatus" style="font-size:11.5px; font-weight:700;"></span>
     <button class="icon-btn" onclick="exitAdmin()">↩ رجوع للكتالوج</button>
   </div>
-  <div class="admin-wrap">
+  <div class="admin-wrap" style="padding-bottom:90px;">
     <button class="admin-add-btn" onclick="openProductForm(null)">+ إضافة منتج جديد</button>
     <div id="adminList"></div>
+  </div>
+  <div class="save-bar" id="saveBar">
+    <div style="max-width:900px; margin:0 auto; padding:0 18px; display:flex; align-items:center; gap:10px;">
+      <span id="unsavedIndicator" style="flex:1; font-size:12.5px; font-weight:700; color:var(--ink-soft);">كل التعديلات محفوظة ✅</span>
+      <button id="saveAllBtn" onclick="saveAllChanges()" style="background:var(--saffron); color:#fff; border:none; border-radius:10px; padding:12px 22px; font-weight:800; font-size:14px; cursor:pointer; box-shadow:0 6px 16px rgba(0,0,0,0.18);">💾 حفظ التعديلات</button>
+    </div>
   </div>
 </div>
 
@@ -357,9 +375,9 @@ const CATEGORY_ICON = Object.fromEntries(CATEGORIES.map(c=>[c.name, c.icon]));
    حالة التطبيق
    ================================================================ */
 let PRODUCTS = [];
-let selectedFlavor = {};
-let qty = {};
-let cart = {};
+let flavorQty = {};     // { productId: { rowIndex: qty } }
+let productNotes = {};  // { productId: "ملاحظة" }
+let cart = {};           // { productId: { name, lines:[{flavor, qty}], note, price, unitsPerCarton } }
 let activeCat = "الكل";
 let searchTerm = "";
 let customerProfile = null;
@@ -369,39 +387,74 @@ let pendingImage = null;
 /* ================================================================
    تحميل/حفظ المنتجات
    ================================================================ */
+let dbConnected = false;
+let hasUnsavedChanges = false;
+
 async function loadProducts(){
   if(!IS_CONFIGURED){
     document.getElementById('demoBanner').style.display = 'block';
+    document.getElementById('demoBanner').textContent = '⚠️ وضع تجريبي: لسه محطتش بيانات JSONBin في الكود (JSONBIN_ID / JSONBIN_KEY).';
     PRODUCTS = JSON.parse(JSON.stringify(DEFAULT_PRODUCTS));
+    dbConnected = false;
     return;
   }
   try{
     const res = await fetch(`${JSONBIN_URL}/latest`, { headers:{ 'X-Master-Key': JSONBIN_KEY } });
+    if(!res.ok){
+      const errText = await res.text();
+      document.getElementById('demoBanner').style.display = 'block';
+      document.getElementById('demoBanner').textContent = `⚠️ فشل الاتصال بقاعدة البيانات (خطأ ${res.status}). راجع Bin ID والـ Master Key. التفاصيل: ${errText.slice(0,150)}`;
+      PRODUCTS = JSON.parse(JSON.stringify(DEFAULT_PRODUCTS));
+      dbConnected = false;
+      return;
+    }
     const data = await res.json();
-    PRODUCTS = (data.record && data.record.products && data.record.products.length) ? data.record.products : JSON.parse(JSON.stringify(DEFAULT_PRODUCTS));
+    PRODUCTS = (data.record && data.record.products) ? data.record.products : [];
+    dbConnected = true;
+    document.getElementById('demoBanner').style.display = 'none';
   }catch(e){
     console.error('تعذر تحميل المنتجات', e);
     document.getElementById('demoBanner').style.display = 'block';
+    document.getElementById('demoBanner').textContent = '⚠️ تعذر الوصول للإنترنت أو للسيرفر أثناء تحميل المنتجات.';
     PRODUCTS = JSON.parse(JSON.stringify(DEFAULT_PRODUCTS));
+    dbConnected = false;
   }
 }
 
 async function saveProducts(){
   if(!IS_CONFIGURED){
     alert('لسه القاعدة البيانات مش متوصلة (وضع تجريبي) - التعديل مش هيتحفظ. راجع إعدادات JSONBIN في الكود.');
-    return true;
+    return false;
   }
   try{
-    await fetch(JSONBIN_URL, {
+    const res = await fetch(JSONBIN_URL, {
       method:'PUT',
       headers:{ 'Content-Type':'application/json', 'X-Master-Key': JSONBIN_KEY },
       body: JSON.stringify({ products: PRODUCTS })
     });
+    if(!res.ok){
+      const errText = await res.text();
+      alert(`فشل الحفظ (خطأ ${res.status}). راجع Bin ID والـ Master Key.\n${errText.slice(0,200)}`);
+      dbConnected = false;
+      updateAdminStatus();
+      return false;
+    }
+    dbConnected = true;
+    updateAdminStatus();
     return true;
   }catch(e){
     alert('حصل خطأ أثناء الحفظ، تأكد من الاتصال بالإنترنت وحاول تاني.');
+    dbConnected = false;
+    updateAdminStatus();
     return false;
   }
+}
+
+function updateAdminStatus(){
+  const el = document.getElementById('adminStatus');
+  if(!el) return;
+  el.textContent = dbConnected ? '🟢 متصل بقاعدة البيانات' : '🔴 غير متصل - التعديلات لن تُحفظ';
+  el.style.color = dbConnected ? '#7FD99A' : '#F2A0A0';
 }
 
 /* ================================================================
@@ -471,6 +524,8 @@ function renderCats(){
 }
 function setCat(c){ activeCat = c; renderCats(); renderGrid(); }
 
+function getFlavorRows(p){ return (p.flavors && p.flavors.length ? p.flavors : ['عادي']).concat(['__MIX__']); }
+
 function renderGrid(){
   const grid = document.getElementById('grid');
   const filtered = PRODUCTS.filter(p=>{
@@ -481,62 +536,86 @@ function renderGrid(){
   document.getElementById('emptyState').style.display = filtered.length ? 'none':'block';
 
   grid.innerHTML = filtered.map(p=>{
-    if(!(p.id in selectedFlavor)) selectedFlavor[p.id] = (p.flavors && p.flavors[0]) || '';
-    if(!(p.id in qty)) qty[p.id] = 1;
-    const pricePerUnit = p.unitsPerCarton ? (p.price / p.unitsPerCarton).toFixed(1) : '-';
+    const unitPrice = p.unitsPerCarton ? Math.round((p.price / p.unitsPerCarton) * 100)/100 : p.price;
     const imgHtml = p.image ? `<img src="${p.image}" alt="${p.name}">` : `<span>${CATEGORY_ICON[p.category] || '📦'}</span>`;
+    const rows = getFlavorRows(p);
+    const rowsHtml = rows.map((f, idx) => {
+      const label = f === '__MIX__' ? 'تشكيلة (حسب المتوفر)' : f;
+      const val = (flavorQty[p.id] && flavorQty[p.id][idx]) || 0;
+      return `
+        <div class="flavor-row">
+          <span class="flavor-row-label ${f==='__MIX__'?'mix':''}">${label}</span>
+          <div class="stepper mini">
+            <button onclick="changeFlavorQty(${p.id}, ${idx}, -1)">−</button>
+            <span id="fq-${p.id}-${idx}">${val}</span>
+            <button onclick="changeFlavorQty(${p.id}, ${idx}, 1)">+</button>
+          </div>
+        </div>`;
+    }).join('');
     return `
     <div class="card">
       <div class="card-img">
         ${imgHtml}
-        <div class="price-tag">${p.price} ج / كرتونة</div>
+        <div class="price-tag">${unitPrice} ج / قطعة</div>
       </div>
       <div class="card-body">
         <h3>${p.name}</h3>
-        <div class="meta-line">
-          <span>${p.unitsPerCarton} كيس/كرتونة</span>
-          <span>~${pricePerUnit} ج/كيس</span>
+        <div class="meta-line"><span>الكرتونة: ${p.unitsPerCarton} قطعة</span></div>
+        <div class="flavor-table">${rowsHtml}</div>
+        <div class="note-field">
+          <textarea id="note-${p.id}" placeholder="ملاحظات (اختياري): مثلاً 5 من كل طعم، أو بدّل كذا بكذا لو مش متوفر" oninput="productNotes[${p.id}]=this.value">${productNotes[p.id] || ''}</textarea>
         </div>
-        <div class="flavors">
-          ${(p.flavors||[]).map(f => `
-            <div class="flavor-chip ${selectedFlavor[p.id]===f?'selected':''}" onclick="pickFlavor(${p.id}, '${f.replace(/'/g,"\\'")}')">${f}</div>
-          `).join('')}
-        </div>
-        <div class="qty-row">
-          <div class="stepper">
-            <button onclick="changeQty(${p.id}, -1)">−</button>
-            <span id="qty-${p.id}">${qty[p.id]}</span>
-            <button onclick="changeQty(${p.id}, 1)">+</button>
-          </div>
-          <button class="add-btn" onclick="addToCart(${p.id})">إضافة للطلب</button>
+        <div class="qty-row" style="justify-content:flex-end;">
+          <button class="add-btn" onclick="addToCart(${p.id})">إضافة للسلة</button>
         </div>
       </div>
     </div>`;
   }).join('');
 }
 
-function pickFlavor(id, flavor){ selectedFlavor[id] = flavor; renderGrid(); }
-function changeQty(id, delta){
-  qty[id] = Math.max(1, (qty[id]||1) + delta);
-  document.getElementById(`qty-${id}`).textContent = qty[id];
+function changeFlavorQty(productId, idx, delta){
+  flavorQty[productId] = flavorQty[productId] || {};
+  const next = Math.max(0, (flavorQty[productId][idx] || 0) + delta);
+  flavorQty[productId][idx] = next;
+  const el = document.getElementById(`fq-${productId}-${idx}`);
+  if(el) el.textContent = next;
 }
-function addToCart(id){
-  const p = PRODUCTS.find(x=>x.id===id);
-  const key = `${id}-${selectedFlavor[id]}`;
-  cart[key] = { product: p.name, flavor: selectedFlavor[id], qty: qty[id], price: p.price };
-  qty[id] = 1;
+
+function addToCart(productId){
+  const p = PRODUCTS.find(x=>x.id===productId);
+  if(!p) return;
+  const rows = getFlavorRows(p);
+  const q = flavorQty[productId] || {};
+  const lines = [];
+  rows.forEach((f, idx) => {
+    const val = q[idx] || 0;
+    if(val > 0) lines.push({ flavor: f === '__MIX__' ? 'تشكيلة (حسب المتوفر)' : f, qty: val });
+  });
+  if(lines.length === 0){
+    alert('حدد كمية لطعم واحد على الأقل، أو استخدم خيار "تشكيلة"');
+    return;
+  }
+  const noteEl = document.getElementById(`note-${productId}`);
+  const note = noteEl ? noteEl.value.trim() : '';
+  productNotes[productId] = note;
+
+  cart[productId] = { name: p.name, lines, note, price: p.price, unitsPerCarton: p.unitsPerCarton };
+
+  flavorQty[productId] = {};
   renderGrid();
   updateCartFab();
 }
-function removeFromCart(key){ delete cart[key]; updateCartFab(); renderOrderLines(); }
+
+function removeFromCart(productId){ delete cart[productId]; updateCartFab(); renderOrderLines(); }
 
 function updateCartFab(){
-  const items = Object.values(cart);
+  const entries = Object.values(cart);
   const fab = document.getElementById('cartFab');
-  if(items.length === 0){ fab.style.display='none'; return; }
+  if(entries.length === 0){ fab.style.display='none'; return; }
   fab.style.display='flex';
-  const total = items.reduce((s,i)=> s + i.price*i.qty, 0);
-  document.getElementById('cartCount').textContent = `${items.length} أصناف في الطلب`;
+  let total = 0;
+  entries.forEach(e => e.lines.forEach(l => { total += e.price * l.qty; }));
+  document.getElementById('cartCount').textContent = `${entries.length} أصناف في الطلب`;
   document.getElementById('cartTotal').textContent = `الإجمالي التقريبي: ${total} جنيه`;
 }
 
@@ -551,28 +630,42 @@ function openOrderModal(){
 }
 function renderOrderLines(){
   const wrap = document.getElementById('orderLines');
-  const items = Object.entries(cart);
-  if(items.length===0){ wrap.innerHTML = `<p style="color:var(--ink-soft); font-size:14px;">السلة فاضية.</p>`; return; }
-  wrap.innerHTML = items.map(([key,i])=>`
-    <div class="order-line">
-      <span>${i.product} (${i.flavor}) × ${i.qty} كرتونة</span>
-      <span class="del" onclick="removeFromCart('${key}')">حذف</span>
-    </div>
-  `).join('');
+  const entries = Object.entries(cart);
+  if(entries.length===0){ wrap.innerHTML = `<p style="color:var(--ink-soft); font-size:14px;">السلة فاضية.</p>`; return; }
+  wrap.innerHTML = entries.map(([productId, e])=>{
+    const linesHtml = e.lines.map(l => `<div style="font-size:12.5px; color:var(--ink-soft); padding:2px 0;">- ${l.flavor} × ${l.qty} كرتونة</div>`).join('');
+    const noteHtml = e.note ? `<div style="font-size:12px; color:var(--saffron-dark); margin-top:4px;">📝 ${e.note}</div>` : '';
+    return `
+    <div class="order-line" style="flex-direction:column; align-items:stretch;">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <b style="font-size:14px;">${e.name}</b>
+        <span class="del" onclick="removeFromCart('${productId}')">حذف</span>
+      </div>
+      ${linesHtml}
+      ${noteHtml}
+    </div>`;
+  }).join('');
 }
 function sendToWhatsapp(){
-  const items = Object.values(cart);
-  if(items.length===0){ alert('السلة فاضية، ضيف منتجات الأول'); return; }
+  const entries = Object.entries(cart);
+  if(entries.length===0){ alert('السلة فاضية، ضيف منتجات الأول'); return; }
   const note = document.getElementById('orderNote').value.trim();
 
   let msg = `طلب جديد من الموقع 🧾\n\n`;
   msg += `العميل: ${customerProfile.name}\n`;
   msg += `الهاتف: ${customerProfile.phone}\n`;
   if(customerProfile.shop) msg += `المحل: ${customerProfile.shop}\n`;
-  if(note) msg += `ملاحظات: ${note}\n`;
+  if(note) msg += `ملاحظات التوصيل: ${note}\n`;
   msg += `\nالأصناف:\n`;
-  items.forEach(i=>{ msg += `• ${i.product} - ${i.flavor} × ${i.qty} كرتونة\n`; });
-  const total = items.reduce((s,i)=> s + i.price*i.qty, 0);
+  let total = 0;
+  entries.forEach(([productId, e])=>{
+    msg += `\n• ${e.name}:\n`;
+    e.lines.forEach(l=>{
+      msg += `   - ${l.flavor} × ${l.qty} كرتونة\n`;
+      total += e.price * l.qty;
+    });
+    if(e.note) msg += `   ملاحظة: ${e.note}\n`;
+  });
   msg += `\nالإجمالي التقريبي: ${total} جنيه`;
 
   window.open(`https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(msg)}`, '_blank');
@@ -600,12 +693,25 @@ function enterAdmin(){
   document.getElementById('catalogView').style.display='none';
   document.getElementById('adminView').style.display='block';
   renderAdminList();
+  updateAdminStatus();
+  const ind = document.getElementById('unsavedIndicator');
+  if(ind){
+    if(hasUnsavedChanges){ ind.textContent = '⚠️ فيه تعديلات لسه ما اتحفظتش'; ind.style.color = 'var(--danger)'; }
+    else{ ind.textContent = 'كل التعديلات محفوظة ✅'; ind.style.color = 'var(--ink-soft)'; }
+  }
 }
 function exitAdmin(){
+  if(hasUnsavedChanges){
+    const ok = confirm('عندك تعديلات لسه ما اتحفظتش! لو خرجت دلوقتي هتضيع. متأكد عايز تخرج؟');
+    if(!ok) return;
+  }
   document.getElementById('adminView').style.display='none';
   document.getElementById('catalogView').style.display='block';
   renderGrid();
 }
+window.addEventListener('beforeunload', function(e){
+  if(hasUnsavedChanges){ e.preventDefault(); e.returnValue = ''; }
+});
 function renderAdminList(){
   const wrap = document.getElementById('adminList');
   wrap.innerHTML = PRODUCTS.map(p=>{
@@ -701,18 +807,35 @@ async function saveProductForm(){
     const newId = PRODUCTS.length ? Math.max(...PRODUCTS.map(p=>p.id))+1 : 1;
     PRODUCTS.push({ id:newId, name, category, flavors, price, unitsPerCarton: units||1, image: pendingImage });
   }
-  const ok = await saveProducts();
+  markUnsaved();
   closeModal('productFormBg');
   renderAdminList();
-  if(ok) renderGrid();
 }
 
 async function deleteProduct(id){
   if(!confirm('متأكد إنك عايز تحذف المنتج ده؟')) return;
   PRODUCTS = PRODUCTS.filter(p=>p.id!==id);
-  await saveProducts();
+  markUnsaved();
   renderAdminList();
-  renderGrid();
+}
+
+function markUnsaved(){
+  hasUnsavedChanges = true;
+  const ind = document.getElementById('unsavedIndicator');
+  if(ind){ ind.textContent = '⚠️ فيه تعديلات لسه ما اتحفظتش'; ind.style.color = 'var(--danger)'; }
+}
+
+async function saveAllChanges(){
+  const btn = document.getElementById('saveAllBtn');
+  const ind = document.getElementById('unsavedIndicator');
+  if(btn){ btn.disabled = true; btn.textContent = 'جاري الحفظ...'; }
+  const ok = await saveProducts();
+  if(btn){ btn.disabled = false; btn.textContent = '💾 حفظ التعديلات'; }
+  if(ok){
+    hasUnsavedChanges = false;
+    if(ind){ ind.textContent = 'كل التعديلات محفوظة ✅'; ind.style.color = 'var(--ink-soft)'; }
+    renderGrid();
+  }
 }
 
 /* ================================================================
